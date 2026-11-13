@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 
 extension NSScreen {
     var displayID: CGDirectDisplayID {
@@ -7,6 +8,14 @@ extension NSScreen {
             return number.uint32Value
         }
         return 0
+    }
+
+    var displayUUIDString: String? {
+        let id = displayID
+        guard id != 0, let uuid = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue() else {
+            return nil
+        }
+        return CFUUIDCreateString(nil, uuid) as String
     }
 
     var renderSpec: ScreenRenderSpec {

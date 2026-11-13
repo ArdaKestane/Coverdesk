@@ -63,6 +63,7 @@ final class WallpaperController {
 
     func setWallpapers(_ files: [RenderedWallpaper], key: String) -> WallpaperUpdate {
         if key == appliedKey {
+            refreshVisibleDesktopSpaces()
             return WallpaperUpdate(error: nil, didChange: false)
         }
         var errors: [String] = []
@@ -70,9 +71,10 @@ final class WallpaperController {
         for file in files {
             guard let screen = NSScreen.screens.first(where: { $0.displayID == file.displayID }) else { continue }
             let url = URL(fileURLWithPath: file.filePath)
+            written[file.displayID] = url
+            guard SpacePinning.activeSpaceIsDesktop(on: screen) else { continue }
             do {
                 try assign(url, to: screen)
-                written[file.displayID] = url
             } catch {
                 errors.append(error.localizedDescription)
             }
@@ -93,6 +95,22 @@ final class WallpaperController {
         return WallpaperUpdate(error: errors.first, didChange: true)
     }
 
+    /// Ensures any Desktop Space that becomes active also receives the current rendered wallpaper in
+    /// Dock/Mission Control thumbnails without ever touching fullscreen app Spaces.
+    func refreshVisibleDesktopSpaces() {
+        guard !activeFiles.isEmpty else { return }
+        for (displayID, url) in activeFiles {
+            guard fileManager.fileExists(atPath: url.path),
+                  let screen = NSScreen.screens.first(where: { $0.displayID == displayID }),
+                  SpacePinning.activeSpaceIsDesktop(on: screen)
+            else { continue }
+            if NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL == url.standardizedFileURL {
+                continue
+            }
+            try? assign(url, to: screen)
+        }
+    }
+
     func restoreOriginals() {
         let stored = loadOriginals()
         for screen in NSScreen.screens {
@@ -100,8 +118,11 @@ final class WallpaperController {
             let url = URL(fileURLWithPath: record.path)
             guard fileManager.fileExists(atPath: url.path) else { continue }
             let options = unarchiveOptions(record.optionsData) ?? Self.defaultOptions
-            try? NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: options)
+            if SpacePinning.activeSpaceIsDesktop(on: screen) {
+                try? NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: options)
+            }
         }
+        activeFiles.removeAll()
         appliedKey = nil
     }
 

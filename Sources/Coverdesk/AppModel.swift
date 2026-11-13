@@ -80,6 +80,7 @@ final class AppModel {
     var onInterfaceChange: (() -> Void)?
     var onPlaybackChange: (() -> Void)?
     var onWallpaperReady: (([RenderedWallpaper]) -> Void)?
+    var onWallpaperClear: (() -> Void)?
     var onSearchChange: (() -> Void)?
     var onSearchFocus: (() -> Void)?
     private(set) var generation = 0
@@ -135,6 +136,7 @@ final class AppModel {
     private var loadedLyricsTrack = ""
     private var emptyReads = 0
     private var screenTask: Task<Void, Never>?
+    private var spaceObserver: NSObjectProtocol?
     private let libraryIndex = LibraryIndex()
     private var libraryTask: Task<Void, Never>?
     private var libraryRefreshAgain = false
@@ -158,6 +160,15 @@ final class AppModel {
             self?.debouncedRender()
         }
         wallpaper.rememberOriginals()
+        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.activeSpaceChanged()
+            }
+        }
         PlayerScript.setAutomationDeniedHandler { [weak self] in
             Task { @MainActor in
                 self?.isPreparingPlayback = false
@@ -210,7 +221,14 @@ final class AppModel {
         playbackTask?.cancel()
         optimisticArtTask?.cancel()
         if preferences.restoreOnQuit {
+            onWallpaperClear?()
             wallpaper.restoreOriginals()
+        }
+    }
+
+    func activeSpaceChanged() {
+        if hasArtwork, preferences.keepArtworkWhenIdle || clock.isPlaying || isPreparingPlayback {
+            wallpaper.refreshVisibleDesktopSpaces()
         }
     }
 
@@ -1278,6 +1296,7 @@ final class AppModel {
     func restoreOriginalWallpaper() {
         renderTask?.cancel()
         upgradeTask?.cancel()
+        onWallpaperClear?()
         wallpaper.restoreOriginals()
         statusMessage = nil
     }
@@ -2239,6 +2258,7 @@ final class AppModel {
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled, let self else { return }
             guard !self.clock.isPlaying, !self.isPreparingPlayback, !self.preferences.keepArtworkWhenIdle else { return }
+            self.onWallpaperClear?()
             self.wallpaper.restoreOriginals()
         }
     }

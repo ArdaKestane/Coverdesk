@@ -31,6 +31,8 @@ final class LyricsOverlayController {
     private let model: AppModel
     private let window: FloatingPanel
     private let hosting: FirstMouseHostingView<LyricsOverlayView>
+    private var spaceObserver: NSObjectProtocol?
+    private var screenObserver: NSObjectProtocol?
     private var rendered = ""
     private var suppressMove = false
 
@@ -46,9 +48,10 @@ final class LyricsOverlayController {
         window.resizeMinimum = LyricsChrome.minimumSize
         window.resizeMaximum = LyricsChrome.maximumSize
         window.acceptsMouseMovedEvents = true
-        window.onFrameCommit = { [weak model] rect in
+        window.onFrameCommit = { [weak self, weak model] rect in
             model?.preferences.setLyricsOrigin(rect.origin)
             model?.preferences.setLyricsSize(rect.size)
+            self?.syncDesktopSpaceMembership()
         }
         AlignmentGuide.shared.register(window, anchor: .center)
         window.contentView = hosting
@@ -57,7 +60,9 @@ final class LyricsOverlayController {
         window.hasShadow = false
         window.ignoresMouseEvents = false
         window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.normalWindow)) - 1)
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        window.collectionBehavior = SpacePinning.isAvailable
+            ? [.managed, .ignoresCycle]
+            : [.canJoinAllSpaces, .stationary, .ignoresCycle]
         window.hidesOnDeactivate = false
         window.isMovableByWindowBackground = false
         window.becomesKeyOnlyIfNeeded = false
@@ -65,6 +70,25 @@ final class LyricsOverlayController {
         window.animationBehavior = .none
         hosting.autoresizingMask = [.width, .height]
         hosting.clipsToBounds = false
+
+        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.syncDesktopSpaceMembership()
+            }
+        }
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.syncDesktopSpaceMembership()
+            }
+        }
     }
 
     func apply() {
@@ -72,6 +96,7 @@ final class LyricsOverlayController {
         refresh()
         guard window.isVisible else { return }
         reposition()
+        syncDesktopSpaceMembership()
     }
 
     func refresh() {
@@ -88,10 +113,14 @@ final class LyricsOverlayController {
             rendered = signature
             hosting.rootView = LyricsOverlayView(model: model, generation: model.generation)
         }
-        guard reveal else { return }
+        guard reveal else {
+            syncDesktopSpaceMembership()
+            return
+        }
         updateLevel()
         reposition()
         window.orderFrontRegardless()
+        syncDesktopSpaceMembership()
     }
 
     func hide() {
@@ -105,8 +134,22 @@ final class LyricsOverlayController {
     private func updateLevel() {
         if model.preferences.floatAboveWindows {
             window.level = .floating
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         } else {
             window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.normalWindow)) - 1)
+            window.collectionBehavior = SpacePinning.isAvailable
+                ? [.managed, .ignoresCycle]
+                : [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        }
+    }
+
+    private func syncDesktopSpaceMembership() {
+        guard !model.preferences.floatAboveWindows, window.isVisible, SpacePinning.isAvailable else { return }
+        let targetScreen = NSScreen.screens.first { $0.frame.contains(NSPoint(x: window.frame.midX, y: window.frame.midY)) }
+            ?? window.screen
+            ?? NSScreen.screens.first
+        if !SpacePinning.pinToDesktopSpaces(window, on: targetScreen) {
+            window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         }
     }
 

@@ -10,6 +10,7 @@ final class ControlPanelController {
     private let mover = WindowMover()
     private var moveObserver: NSObjectProtocol?
     private var screenObserver: NSObjectProtocol?
+    private var spaceObserver: NSObjectProtocol?
     private var outsideMonitor: Any?
     private var localOutsideMonitor: Any?
     private var suppressMove = false
@@ -24,15 +25,18 @@ final class ControlPanelController {
         panel = FloatingPanel(contentRect: NSRect(origin: .zero, size: model.preferences.controlSize))
         container = ControlContainerView(model: model, mover: mover)
         mover.window = panel
-        mover.onEnd = { [weak model] origin in
+        mover.onEnd = { [weak self, weak model] origin in
             model?.preferences.setCustomOrigin(origin)
+            self?.syncDesktopSpaceMembership()
         }
         panel.contentView = container
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = false
         panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.normalWindow)) - 1)
-        panel.collectionBehavior = [.canJoinAllSpaces, .ignoresCycle, .stationary]
+        panel.collectionBehavior = SpacePinning.isAvailable
+            ? [.managed, .ignoresCycle]
+            : [.canJoinAllSpaces, .ignoresCycle, .stationary]
         panel.hidesOnDeactivate = false
         panel.isMovableByWindowBackground = false
         panel.becomesKeyOnlyIfNeeded = true
@@ -45,6 +49,7 @@ final class ControlPanelController {
         panel.resizeMaximum = NSSize(width: 900, height: 230)
         panel.onFrameCommit = { [weak self, weak model] rect in
             model?.preferences.setCustomOrigin(rect.origin)
+            self?.syncDesktopSpaceMembership()
             guard self?.restingSize == nil else { return }
             model?.preferences.setControlSize(rect.size)
         }
@@ -69,6 +74,16 @@ final class ControlPanelController {
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.model.screensChanged()
+                self?.syncDesktopSpaceMembership()
+            }
+        }
+        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.syncDesktopSpaceMembership()
             }
         }
         model.onInterfaceChange = { [weak self] in
@@ -96,6 +111,7 @@ final class ControlPanelController {
         applyChrome()
         if model.preferences.controlsVisible {
             panel.orderFrontRegardless()
+            syncDesktopSpaceMembership()
         }
     }
 
@@ -222,14 +238,27 @@ final class ControlPanelController {
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .stationary]
         } else {
             panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.normalWindow)) - 1)
-            panel.collectionBehavior = [.canJoinAllSpaces, .ignoresCycle, .stationary]
+            panel.collectionBehavior = SpacePinning.isAvailable
+                ? [.managed, .ignoresCycle]
+                : [.canJoinAllSpaces, .ignoresCycle, .stationary]
         }
         reposition()
         container.render()
         if model.preferences.controlsVisible {
             panel.orderFrontRegardless()
+            syncDesktopSpaceMembership()
         } else {
             panel.orderOut(nil)
+        }
+    }
+
+    private func syncDesktopSpaceMembership() {
+        guard !model.preferences.floatAboveWindows, panel.isVisible, SpacePinning.isAvailable else { return }
+        let targetScreen = NSScreen.screens.first { $0.frame.contains(NSPoint(x: panel.frame.midX, y: panel.frame.midY)) }
+            ?? panel.screen
+            ?? NSScreen.screens.first
+        if !SpacePinning.pinToDesktopSpaces(panel, on: targetScreen) {
+            panel.collectionBehavior = [.canJoinAllSpaces, .ignoresCycle, .stationary]
         }
     }
 

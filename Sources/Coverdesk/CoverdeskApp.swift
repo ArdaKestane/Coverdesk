@@ -30,6 +30,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onWallpaperReady = { [weak fade] files in
             fade?.crossfade(files)
         }
+        model.onWallpaperClear = { [weak fade] in
+            fade?.hide()
+        }
         model.start()
         panel?.show()
         lyrics.apply()
